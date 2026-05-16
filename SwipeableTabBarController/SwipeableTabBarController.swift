@@ -48,6 +48,9 @@ open class SwipeableTabBarController: UITabBarController {
 
     /// Indicates that UIKit should wire the next transition to the pan interactor.
     private var shouldUsePanInteractorForCurrentTransition = false
+
+    /// True while a programmatic selection setter has already prepared its transition source.
+    private var isApplyingPreparedSelection = false
     
     /// Pan gesture for the swiping interaction
     //swiftlint:disable next implicitly_unwrapped_optional
@@ -135,21 +138,27 @@ open class SwipeableTabBarController: UITabBarController {
         panGestureRecognizer = panGesture
     }
 
-    private func selectIndex(_ index: Int) {
+    private func selectIndex(_ index: Int, source: SelectionSource = .tap, usesPanInteractor: Bool = false) {
         guard transitionCoordinator == nil else {
-            queueSelectedIndex(index)
+            queueSelectedIndex(index, source: source)
             return
         }
 
+        prepareTransition(from: source, usesPanInteractor: usesPanInteractor)
+        isApplyingPreparedSelection = true
+        defer { isApplyingPreparedSelection = false }
         super.selectedIndex = index
     }
 
-    private func selectViewController(_ viewController: UIViewController) {
+    private func selectViewController(_ viewController: UIViewController, source: SelectionSource = .tap) {
         guard transitionCoordinator == nil else {
-            queueSelection(.viewController(viewController, .tap))
+            queueSelection(.viewController(viewController, source))
             return
         }
 
+        prepareTransition(from: source, usesPanInteractor: false)
+        isApplyingPreparedSelection = true
+        defer { isApplyingPreparedSelection = false }
         super.selectedViewController = viewController
     }
 
@@ -164,7 +173,21 @@ open class SwipeableTabBarController: UITabBarController {
     private func queueSelection(_ selection: PendingSelection) {
         pendingSelection = selection
         schedulePendingSelectionHandler()
+
+        guard !selectionMatchesCurrentState(selection) else {
+            return
+        }
+
         [swipeAnimatedTransitioning, tapAnimatedTransitioning].forEach { $0?.forceTransitionToFinish() }
+    }
+
+    private func selectionMatchesCurrentState(_ selection: PendingSelection) -> Bool {
+        switch selection {
+        case .index(let index, _):
+            return index == super.selectedIndex
+        case .viewController(let viewController, _):
+            return super.selectedViewController === viewController
+        }
     }
 
     private func schedulePendingSelectionHandler() {
@@ -212,20 +235,18 @@ open class SwipeableTabBarController: UITabBarController {
             guard nextSelectedIndex != super.selectedIndex else {
                 return
             }
-            preparePendingTransition(from: source)
-            selectIndex(nextSelectedIndex)
+            selectIndex(nextSelectedIndex, source: source, usesPanInteractor: false)
         case .viewController(let viewController, let source):
             guard super.selectedViewController !== viewController,
                 containsViewController(viewController) else {
                     return
             }
-            preparePendingTransition(from: source)
-            selectViewController(viewController)
+            selectViewController(viewController, source: source)
         }
     }
 
-    private func preparePendingTransition(from source: SelectionSource) {
-        shouldUsePanInteractorForCurrentTransition = false
+    private func prepareTransition(from source: SelectionSource, usesPanInteractor: Bool) {
+        shouldUsePanInteractorForCurrentTransition = usesPanInteractor
 
         switch source {
         case .swipe:
@@ -265,8 +286,7 @@ open class SwipeableTabBarController: UITabBarController {
 
         if let nextSelectedIndex = selectedIndex(for: translation) {
             isSwipeGestureDrivingTransition = true
-            shouldUsePanInteractorForCurrentTransition = true
-            selectedIndex = nextSelectedIndex
+            selectIndex(nextSelectedIndex, source: .swipe, usesPanInteractor: true)
         } else {
             // Don't reset the gesture recognizer if we skipped starting the
             // transition because we don't have a translation yet (and thus, could
@@ -376,6 +396,9 @@ extension SwipeableTabBarController: UITabBarControllerDelegate {
             return false
         }
 
+        if !isApplyingPreparedSelection {
+            prepareTransition(from: .tap, usesPanInteractor: false)
+        }
         return true
     }
 }
